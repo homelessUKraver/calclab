@@ -6,7 +6,7 @@ from datetime import datetime
 import io
 
 st.set_page_config(page_title="GC-MS Pełny Raport", layout="centered")
-st.title("🧪 Profesjonalny Kalkulator Kalibracji")
+st.title("Kalkulator Stężeń")
 
 # Inicjalizacja pamięci dla wyników próbek nieznanych (żeby nie znikały przy odświeżeniu)
 if 'unknowns_results' not in st.session_state:
@@ -16,9 +16,9 @@ if 'unknowns_results' not in st.session_state:
 st.header("1. Parametry Run-u")
 col1, col2 = st.columns(2)
 with col1:
-    stock_unit = st.text_input("Jednostka Stock (np. mg/L)", value="mg/L")
-    target_unit = st.text_input("Jednostka Standardów (np. ug/mL)", value="ug/mL")
-    vol_unit = st.text_input("Jednostka Objętości (np. mL)", value="mL")
+    stock_unit = st.text_input("Jednostka koncentracji stock roztworów (np. mg/L)", value="mg/L")
+    target_unit = st.text_input("Jednostka koncentracji standardów (np. ug/mL)", value="ug/mL")
+    vol_unit = st.text_input("Jednostka objętości standardów (np. mL)", value="mL")
 with col2:
     C1_raw = st.number_input(f"Stężenie Stock ({stock_unit})", value=100.0)
     V2 = st.number_input(f"Objętość końcowa standardu ({vol_unit})", value=10.0)
