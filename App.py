@@ -27,7 +27,7 @@ with col2:
     c2_input = st.text_input("Stężenia standardów (oddzielone przecinkiem)", value="0.1, 0.5, 1.0, 2.0, 5.0")
 
 st.markdown("### Wzorzec Wewnętrzny (Internal Standard)")
-use_is = st.checkbox("Dodaj Wzorzec Wewnętrzny (IS)")
+use_is = st.checkbox("Dodaj Wzorzec Wewnętrzny (IS)", value=True)
 if use_is:
     col_is1, col_is2 = st.columns(2)
     with col_is1:
@@ -62,6 +62,8 @@ st.table(pd.DataFrame(pipette_dict))
 
 # --- 3. Peak Areas ---
 st.header("3. Dane z chromatografu")
+st.write("Wpisz obszary pików w tabeli poniżej. Ratio zostanie wyliczone i wyświetlone po kliknięciu 'Oblicz'.")
+
 if use_is:
     entry_df = pd.DataFrame({
         f"Standard ({target_unit})": c2_list, 
@@ -99,9 +101,20 @@ if st.button("Oblicz Krzywą i Statystyki", type="primary"):
     st.session_state['y_plot_data'] = y_vals
     st.session_state['curve_calculated'] = True
 
-# --- WYŚWIETLANIE KRZYWEJ (zostaje na ekranie) ---
+# --- WYŚWIETLANIE KRZYWEJ I TABELI RATIO ---
 if st.session_state.get('curve_calculated', False):
     st.success(f"**Równanie:** y = {st.session_state['slope']:.4f}x + {st.session_state['intercept']:.4f} | **R²** = {st.session_state['r2']:.4f}")
+    
+    # Podgląd wyliczonego Ratio dla punktów kalibracyjnych
+    if st.session_state.get('curve_has_is', False):
+        st.markdown("**Wyliczone wartości dla punktów kalibracyjnych:**")
+        calc_df = pd.DataFrame({
+            f"Stężenie ({target_unit})": st.session_state['c2_list_data'],
+            "Peak Area (Standard)": st.session_state['std_areas_data'],
+            "Peak Area (IS)": st.session_state['is_areas_data'],
+            "Wyliczone Ratio": [round(r, 4) for r in st.session_state['ratios_data']]
+        })
+        st.table(calc_df)
     
     fig, ax = plt.subplots(figsize=(6, 4))
     x_data = st.session_state['c2_list_data']
@@ -114,7 +127,6 @@ if st.session_state.get('curve_calculated', False):
     ax.legend()
     st.pyplot(fig)
     
-    # Zapis obrazka do pamięci, aby można go było pobrać
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
     st.download_button(
@@ -151,7 +163,6 @@ if st.session_state.get('curve_calculated', False):
         if not (curve_is_active and unk_is_area <= 0):
             res = (y_for_calc - st.session_state['intercept']) / st.session_state['slope']
             
-            # Zapisujemy z jasnymi jednostkami
             if curve_is_active:
                 st.session_state['unknowns_results'].append({
                     "Area (Próbka)": unk_area, 
@@ -195,17 +206,20 @@ def generate_full_report():
     output.write(f"R2;{format_n(st.session_state.get('r2',0))}\n\n")
 
     output.write("--- DANE STANDARDOW ---\n")
+    # Zabezpieczenie na wypadek braku danych w session_state po restarcie
+    saved_c2 = st.session_state.get('c2_list_data', c2_list)
+    
     if st.session_state.get('curve_has_is', False):
         output.write(f"Stezenie ({target_unit});Peak Area (Standard);Peak Area (IS);Ratio\n")
         s_areas = st.session_state.get('std_areas_data', [])
         i_areas = st.session_state.get('is_areas_data', [])
         ratios = st.session_state.get('ratios_data', [])
-        for c, s, i, r in zip(st.session_state['c2_list_data'], s_areas, i_areas, ratios):
+        for c, s, i, r in zip(saved_c2, s_areas, i_areas, ratios):
             output.write(f"{format_n(c)};{format_n(s)};{format_n(i)};{format_n(r)}\n")
     else:
         output.write(f"Stezenie ({target_unit});Peak Area\n")
         y_values = st.session_state.get('y_vals_data', [])
-        for c, a in zip(st.session_state['c2_list_data'], y_values):
+        for c, a in zip(saved_c2, y_values):
             output.write(f"{format_n(c)};{format_n(a)}\n")
     output.write("\n")
 
