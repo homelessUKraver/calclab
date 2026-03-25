@@ -4,124 +4,199 @@ import scipy.stats as stats
 import matplotlib.pyplot as plt
 from datetime import datetime
 import io
+import numpy as np
 
-st.set_page_config(page_title="GC-MS Pełny Raport", layout="centered")
-st.title("Kalkulator Stężeń")
+# --- KONFIGURACJA STRONY ---
+st.set_page_config(page_title="GC-MS Master Pro", layout="wide")
+st.title("🧪 System GC-MS: Pełna Analiza (Quant & Qual + IS)")
 
-# Inicjalizacja pamięci dla wyników próbek nieznanych (żeby nie znikały przy odświeżeniu)
-if 'unknowns_results' not in st.session_state:
-    st.session_state['unknowns_results'] = []
+# --- INICJALIZACJA PAMIĘCI (Session State) ---
+if 'results_log' not in st.session_state:
+    st.session_state['results_log'] = []
+if 'curve_data' not in st.session_state:
+    st.session_state['curve_data'] = {'ready': False, 'avg_is_cal': 1.0, 'slope': 0, 'intercept': 0, 'r2': 0}
 
-# --- 1. Parametry ---
-st.header("1. Parametry")
-col1, col2 = st.columns(2)
-with col1:
-    stock_unit = st.text_input("Jednostka koncentracji stock roztworu (np. mg/L)", value="mg/L")
-    target_unit = st.text_input("Jednostka koncentracji standardów (np. ug/mL)", value="ug/mL")
-    vol_unit = st.text_input("Jednostka objętości standardów (np. mL)", value="mL")
-with col2:
-    C1_raw = st.number_input(f"Stężenie stock rozwtworu ({stock_unit})", value=100.0)
-    V2 = st.number_input(f"Objętość końcowa standardu ({vol_unit})", value=10.0)
-    c2_input = st.text_input("Stężenia standardów (oddzielone przecinkiem)", value="0.1, 0.5, 1.0, 2.0, 5.0")
+# --- PASEK BOCZNY (USTAWIENIA) ---
+st.sidebar.header("🛡️ Ustawienia IS")
+use_is = st.sidebar.checkbox("Użyj Standardu Wewnętrznego (IS)", value=True)
+is_recovery_limit = st.sidebar.slider("Minimalny odzysk IS (%)", 20, 100, 50, help="Poniżej tego progu program oflaguje błąd.")
 
-# --- Konwersja ---
-unit_factors = {'ug/ml': 1.0, 'mg/l': 1.0, 'ppm': 1.0, 'mg/ml': 1000.0, 'g/l': 1000.0, 'ug/l': 0.001, 'ng/ml': 0.001, 'ppb': 0.001}
-s_unit_clean = stock_unit.lower().replace(" ", "")
-t_unit_clean = target_unit.lower().replace(" ", "")
-multiplier = unit_factors.get(s_unit_clean, 1.0) / unit_factors.get(t_unit_clean, 1.0)
-C1_converted = C1_raw * multiplier
+st.sidebar.divider()
+st.sidebar.header("⚙️ Parametry Jakościowe (MS)")
+expected_rt = st.sidebar.number_input("Oczekiwany Czas Retencji (RT)", value=5.20, format="%.2f")
+rt_tolerance = st.sidebar.number_input("Tolerancja RT (+/- min)", value=0.05, format="%.2f")
+nist_min = st.sidebar.slider("Min. NIST Match Score", 0, 1000, 800)
 
-c2_list = [float(x.strip()) for x in c2_input.split(",") if x.strip()]
-v1_list = [(c * V2) / C1_converted for c in c2_list]
+st.sidebar.subheader("Weryfikacja Jonów")
+exp_ratio_q1 = st.sidebar.number_input("Oczekiwany Ratio Q1/Quant (%)", value=50.0)
+ratio_tolerance = st.sidebar.number_input("Tolerancja Ratio (+/- %)", value=20.0)
 
-# --- 2. Instrukcja Pipetowania ---
-st.header("2. Przygotowanie Standardów")
-pipette_df = pd.DataFrame({
-    f"Stężenie ({target_unit})": c2_list,
-    f"Objętość Stock ({vol_unit})": [round(v, 4) for v in v1_list],
-    f"Dopełnić do ({vol_unit})": [V2] * len(c2_list)
-})
-st.table(pipette_df)
+# --- SEGMENT 1: KALIBRACJA ILOŚCIOWA ---
+st.header("1️⃣ Kalibracja Ilościowa")
+c_col1, c_col2 = st.columns([1, 2])
 
-# --- 3. Peak Areas ---
-st.header("3. Dane z chromatografu")
-entry_df = pd.DataFrame({f"Standard ({target_unit})": c2_list, "Peak Area": [0.0] * len(c2_list)})
-edited_df = st.data_editor(entry_df, use_container_width=True)
+with c_col1:
+    target_unit = st.text_input("Jednostka stężenia (x)", value="ug/mL")
+    c2_input = st.text_input("Stężenia standardów (po przecinku)", value="0.1, 0.5, 1.0, 5.0")
+    c2_list = [float(x.strip()) for x in c2_input.split(",") if x.strip()]
 
-slope, intercept, r_squared = 0, 0, 0
-
-if st.button("Oblicz Krzywą i Statystyki", type="primary"):
-    y = edited_df["Peak Area"].tolist()
-    slope, intercept, r_value, p_value, std_err = stats.linregress(c2_list, y)
-    r_squared = r_value**2
+with c_col2:
+    st.write("Wprowadź pola pików (Area) dla krzywej wzorcowej:")
+    if use_is:
+        cal_data = pd.DataFrame({
+            "Stężenie x": c2_list, 
+            "Area Analitu": [0.0] * len(c2_list), 
+            "Area IS": [10000.0] * len(c2_list)
+        })
+    else:
+        cal_data = pd.DataFrame({
+            "Stężenie x": c2_list, 
+            "Area Analitu": [0.0] * len(c2_list)
+        })
     
-    st.session_state['slope'] = slope
-    st.session_state['intercept'] = intercept
-    st.session_state['r2'] = r_squared
-    
-    st.info(f"Równanie: y = {slope:.4f}x + {intercept:.4f} | R² = {r_squared:.4f}")
-    
-    fig, ax = plt.subplots()
-    ax.scatter(c2_list, y, color='red')
-    ax.plot(c2_list, [slope*x + intercept for x in c2_list], color='blue')
+    edited_cal_df = st.data_editor(cal_data, use_container_width=True, key="cal_editor")
+
+if st.button("Wylicz Krzywą Kalibracyjną", type="primary"):
+    x = edited_cal_df["Stężenie x"].tolist()
+    if sum(edited_cal_df["Area Analitu"]) == 0:
+        st.error("Wprowadź wartości Area Analitu większe od 0!")
+    else:
+        if use_is:
+            avg_is_cal = edited_cal_df["Area IS"].mean()
+            y = (edited_cal_df["Area Analitu"] / edited_cal_df["Area IS"]).tolist()
+            y_label = "Response Ratio (Analit/IS)"
+        else:
+            avg_is_cal = 1.0
+            y = edited_cal_df["Area Analitu"].tolist()
+            y_label = "Peak Area (y)"
+
+        slope, intercept, r_val, p, err = stats.linregress(x, y)
+        st.session_state['curve_data'] = {
+            'slope': slope, 'intercept': intercept, 'r2': r_val**2, 
+            'ready': True, 'x': x, 'y': y, 'y_label': y_label,
+            'avg_is_cal': avg_is_cal, 'cal_df': edited_cal_df
+        }
+        st.success(f"Krzywa wyliczona poprawnie! R² = {r_val**2:.4f}")
+
+# Wyświetlanie wykresu
+if st.session_state['curve_data']['ready']:
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.scatter(st.session_state['curve_data']['x'], st.session_state['curve_data']['y'], color='red', zorder=5)
+    line_x = np.linspace(min(st.session_state['curve_data']['x']), max(st.session_state['curve_data']['x']), 100)
+    line_y = st.session_state['curve_data']['slope'] * line_x + st.session_state['curve_data']['intercept']
+    ax.plot(line_x, line_y, color='blue', alpha=0.6)
+    ax.set_xlabel(f"Stężenie [{target_unit}]")
+    ax.set_ylabel(st.session_state['curve_data']['y_label'])
+    ax.grid(True, linestyle='--', alpha=0.6)
     st.pyplot(fig)
 
-# --- 4. Próbki Nieznane ---
-st.header("4. Analiza Próbek")
-unk_area = st.number_input("Wpisz Area próbki nieznanej:", value=0.0)
-if st.button("Dodaj wynik do raportu"):
-    if 'slope' in st.session_state:
-        res = (unk_area - st.session_state['intercept']) / st.session_state['slope']
-        st.session_state['unknowns_results'].append({"Area": unk_area, "Wynik": res})
-    else:
-        st.error("Najpierw oblicz krzywą!")
+# --- SEGMENT 2: ANALIZA PRÓBEK (NIEZNANYCH) ---
+st.divider()
+st.header("2️⃣ Analiza Próbek i Weryfikacja (Qualitative)")
+if st.session_state['curve_data']['ready']:
+    with st.expander("📝 Panel wprowadzania danych z chromatogramu", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            u_name = st.text_input("Nazwa Próbki", value=f"Próbka {len(st.session_state['results_log'])+1}")
+            u_area = st.number_input("Area Analitu (Quantifier)", value=0.0)
+            u_is = st.number_input("Area IS", value=st.session_state['curve_data']['avg_is_cal']) if use_is else 1.0
+        with col2:
+            u_rt = st.number_input("Zmierzony RT", value=0.0, format="%.2f")
+            u_nist = st.number_input("NIST Match Score", value=0, min_value=0, max_value=1000)
+        with col3:
+            u_q1 = st.number_input("Area Jonu Q1 (Qualifier)", value=0.0)
 
-if st.session_state['unknowns_results']:
-    st.write("Ostatnie wyniki:")
-    st.table(pd.DataFrame(st.session_state['unknowns_results']))
+        if st.button("Dodaj Wynik do Tabeli"):
+            # Obliczenia ilościowe
+            y_val = (u_area / u_is) if use_is else u_area
+            conc = (y_val - st.session_state['curve_data']['intercept']) / st.session_state['curve_data']['slope']
+            
+            # Weryfikacja jakościowa i IS
+            recovery = (u_is / st.session_state['curve_data']['avg_is_cal']) * 100 if use_is else 100.0
+            is_ok = recovery >= is_recovery_limit
+            
+            rt_ok = abs(u_rt - expected_rt) <= rt_tolerance
+            nist_ok = u_nist >= nist_min
+            
+            q1_ratio = (u_q1 / u_area * 100) if u_area > 0 else 0
+            q1_ok = abs(q1_ratio - exp_ratio_q1) <= (exp_ratio_q1 * ratio_tolerance / 100)
+            
+            # Budowa statusu
+            uwagi = []
+            if not is_ok: uwagi.append("SŁABY IS")
+            if not rt_ok: uwagi.append("ZŁE RT")
+            if not nist_ok: uwagi.append("NISKI NIST")
+            if not q1_ok: uwagi.append("ZŁE RATIO Q1")
+            if conc < 0: uwagi.append("PONIŻEJ LOQ")
+            
+            final_status = "ZATWIERDZONO" if len(uwagi) == 0 else "BŁĄD"
+            uwagi_str = " | ".join(uwagi) if uwagi else "OK"
+            
+            st.session_state['results_log'].append({
+                "Nazwa": u_name,
+                f"Stężenie [{target_unit}]": round(conc, 4),
+                "IS Recovery %": round(recovery, 1) if use_is else "-",
+                "RT": u_rt,
+                "Q1 Ratio %": round(q1_ratio, 1),
+                "NIST": u_nist,
+                "Status": final_status,
+                "Uwagi": uwagi_str
+            })
 
-# --- 5. GENEROWANIE PEŁNEGO RAPORTU ---
-st.header("5. Eksport Danych")
-
-def generate_full_report():
-    output = io.StringIO()
-    # Używamy średnika jako separatora dla europejskiego Excela
-    def format_n(n): return str(round(n, 4)).replace('.', ',')
-
-    output.write("--- PARAMETRY BIEGU ---\n")
-    output.write(f"Data;{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    output.write(f"Jednostka Stock;{stock_unit}\n")
-    output.write(f"Jednostka Celu;{target_unit}\n")
-    output.write(f"Stezenie Stock;{format_n(C1_raw)}\n\n")
-
-    output.write("--- KRZYWA KALIBRACYJNA ---\n")
-    output.write(f"Rownanie;y = {format_n(st.session_state.get('slope',0))}x + {format_n(st.session_state.get('intercept',0))}\n")
-    output.write(f"R2;{format_n(st.session_state.get('r2',0))}\n\n")
-
-    output.write("--- DANE STANDARDOW ---\n")
-    output.write(f"Stezenie ({target_unit});Peak Area\n")
-    y_values = edited_df["Peak Area"].tolist()
-    for c, a in zip(c2_list, y_values):
-        output.write(f"{format_n(c)};{format_n(a)}\n")
-    output.write("\n")
-
-    output.write("--- WYNIKI PROBEK ---\n")
-    output.write("Area próbki;Wynik stężenia;Uwagi\n")
-    for item in st.session_state['unknowns_results']:
-        uwaga = "Poniżej LOQ" if item['Wynik'] < 0 else ""
-        output.write(f"{format_n(item['Area'])};{format_n(item['Wynik'])};{uwaga}\n")
+# Wyświetlanie tabeli wyników
+if st.session_state['results_log']:
+    df_res = pd.DataFrame(st.session_state['results_log'])
     
+    # Kolorowanie statusów
+    def color_status(val):
+        color = 'green' if val == "ZATWIERDZONO" else 'red'
+        return f'color: {color}; font-weight: bold'
+
+    st.subheader("📊 Wyniki Końcowe Serii")
+    # Zabezpieczenie przed błędem w nowszych wersjach pandas (użycie map zamiast applymap)
+    st.dataframe(df_res.style.map(color_status, subset=['Status']))
+
+# --- SEGMENT 3: EKSPORT DO CSV ---
+st.divider()
+def format_eur(val):
+    return str(val).replace('.', ',')
+
+def generate_csv_full():
+    output = io.StringIO()
+    output.write("--- RAPORT GC-MS: QUANT & QUAL ---\n")
+    output.write(f"Data wygenerowania;{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    output.write(f"Tryb Standardu Wewnetrznego (IS);{'WLACZONY' if use_is else 'WYLACZONY'}\n\n")
+    
+    output.write("--- PARAMETRY KRZYWEJ ---\n")
+    output.write(f"Rownanie;y = {format_eur(round(st.session_state['curve_data']['slope'], 5))}x + {format_eur(round(st.session_state['curve_data']['intercept'], 5))}\n")
+    output.write(f"R-kwadrat (R2);{format_eur(round(st.session_state['curve_data']['r2'], 5))}\n")
+    if use_is:
+        output.write(f"Srednie Area IS (100%);{format_eur(round(st.session_state['curve_data']['avg_is_cal'], 2))}\n")
+    output.write("\n")
+    
+    output.write("--- WYNIKI PROBEK NIEZNANYCH ---\n")
+    if st.session_state['results_log']:
+        df_export = pd.DataFrame(st.session_state['results_log'])
+        # Konwersja wszystkich liczb na format z przecinkiem dla Excela
+        for col in df_export.select_dtypes(include=['float', 'float64']):
+            df_export[col] = df_export[col].apply(format_eur)
+        
+        output.write(df_export.to_csv(index=False, sep=';'))
+    else:
+        output.write("Brak wprowadzonych probek.\n")
+        
     return output.getvalue()
 
-if st.session_state['unknowns_results'] or 'slope' in st.session_state:
-    full_report = generate_full_report()
+if st.session_state['results_log']:
     st.download_button(
-        label="📥 Pobierz pełny raport (CSV)",
-        data=full_report,
-        file_name=f"Raport_Laboratorium_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime='text/csv',
+        label="📥 Pobierz Pełny Certyfikat Analizy (CSV do Excela)", 
+        data=generate_csv_full(), 
+        file_name=f"GCMS_Raport_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", 
+        mime="text/csv",
+        type="primary"
     )
 
-if st.button("Wyczyść dane"):
-    st.session_state['unknowns_results'] = []
+if st.button("Wyczyść wszystkie dane (Nowa Seria)"):
+    st.session_state['results_log'] = []
+    st.session_state['curve_data'] = {'ready': False, 'avg_is_cal': 1.0, 'slope': 0, 'intercept': 0, 'r2': 0}
     st.rerun()
