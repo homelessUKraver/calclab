@@ -8,12 +8,11 @@ import io
 st.set_page_config(page_title="GC-MS Pełny Raport", layout="centered")
 st.title("Kalkulator Stężeń")
 
-# Inicjalizacja pamięci
+# --- INICJALIZACJA PAMIĘCI ---
 if 'unknowns_results' not in st.session_state:
     st.session_state['unknowns_results'] = []
-# Zmienna przechowująca informację, czy ostatnia krzywa była liczona z użyciem IS
-if 'curve_has_is' not in st.session_state:
-    st.session_state['curve_has_is'] = False
+if 'curve_calculated' not in st.session_state:
+    st.session_state['curve_calculated'] = False
 
 # --- 1. Parametry ---
 st.header("1. Parametry")
@@ -59,9 +58,7 @@ if use_is:
     pipette_dict[f"Dodaj IS ({is_unit})"] = [is_vol] * len(c2_list)
 
 pipette_dict[f"Dopełnić do ({vol_unit})"] = [V2] * len(c2_list)
-
-pipette_df = pd.DataFrame(pipette_dict)
-st.table(pipette_df)
+st.table(pd.DataFrame(pipette_dict))
 
 # --- 3. Peak Areas ---
 st.header("3. Dane z chromatografu")
@@ -83,7 +80,6 @@ if st.button("Oblicz Krzywą i Statystyki", type="primary"):
     if use_is:
         std_areas = edited_df["Peak Area (Standard)"].tolist()
         is_areas = edited_df["Peak Area (IS)"].tolist()
-        # Wyliczanie stosunku (Ratio). Zabezpieczenie przed dzieleniem przez zero.
         y_vals = [s / i if i > 0 else 0 for s, i in zip(std_areas, is_areas)]
         
         st.session_state['std_areas_data'] = std_areas
@@ -94,38 +90,55 @@ if st.button("Oblicz Krzywą i Statystyki", type="primary"):
         st.session_state['y_vals_data'] = y_vals
 
     slope, intercept, r_value, p_value, std_err = stats.linregress(c2_list, y_vals)
-    r_squared = r_value**2
     
     st.session_state['slope'] = slope
     st.session_state['intercept'] = intercept
-    st.session_state['r2'] = r_squared
-    st.session_state['curve_has_is'] = use_is # Zapisujemy, czy krzywa ma IS, żeby próbki wiedziały jak się liczyć
+    st.session_state['r2'] = r_value**2
+    st.session_state['curve_has_is'] = use_is 
+    st.session_state['c2_list_data'] = c2_list
+    st.session_state['y_plot_data'] = y_vals
+    st.session_state['curve_calculated'] = True
+
+# --- WYŚWIETLANIE KRZYWEJ (zostaje na ekranie) ---
+if st.session_state.get('curve_calculated', False):
+    st.success(f"**Równanie:** y = {st.session_state['slope']:.4f}x + {st.session_state['intercept']:.4f} | **R²** = {st.session_state['r2']:.4f}")
     
-    st.info(f"Równanie: y = {slope:.4f}x + {intercept:.4f} | R² = {r_squared:.4f}")
+    fig, ax = plt.subplots(figsize=(6, 4))
+    x_data = st.session_state['c2_list_data']
+    y_data = st.session_state['y_plot_data']
     
-    fig, ax = plt.subplots()
-    ax.scatter(c2_list, y_vals, color='red')
-    ax.plot(c2_list, [slope*x + intercept for x in c2_list], color='blue')
+    ax.scatter(x_data, y_data, color='red', label='Punkty kalibracyjne')
+    ax.plot(x_data, [st.session_state['slope']*x + st.session_state['intercept'] for x in x_data], color='blue', label='Linia trendu')
     ax.set_xlabel(f"Stężenie ({target_unit})")
-    ax.set_ylabel("Ratio (Standard/IS)" if use_is else "Peak Area")
+    ax.set_ylabel("Ratio (Standard/IS)" if st.session_state['curve_has_is'] else "Peak Area")
+    ax.legend()
     st.pyplot(fig)
+    
+    # Zapis obrazka do pamięci, aby można go było pobrać
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    st.download_button(
+        label="🖼️ Pobierz wykres jako obrazek (PNG)",
+        data=buf.getvalue(),
+        file_name=f"krzywa_kalibracyjna_{datetime.now().strftime('%Y%m%d')}.png",
+        mime="image/png"
+    )
 
 # --- 4. Próbki Nieznane ---
 st.header("4. Analiza Próbek")
-curve_is_active = st.session_state.get('curve_has_is', False)
+if st.session_state.get('curve_calculated', False):
+    curve_is_active = st.session_state['curve_has_is']
 
-if curve_is_active:
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         unk_area = st.number_input("Wpisz Peak Area próbki:", value=0.0)
     with col_u2:
-        unk_is_area = st.number_input("Wpisz Peak Area IS w próbce:", value=0.0)
-else:
-    unk_area = st.number_input("Wpisz Area próbki nieznanej:", value=0.0)
-    unk_is_area = 0.0
+        if curve_is_active:
+            unk_is_area = st.number_input("Wpisz Peak Area IS w próbce:", value=0.0)
+        else:
+            unk_is_area = 0.0
 
-if st.button("Dodaj wynik do raportu"):
-    if 'slope' in st.session_state:
+    if st.button("Dodaj wynik do raportu"):
         if curve_is_active:
             if unk_is_area > 0:
                 y_for_calc = unk_area / unk_is_area
@@ -135,27 +148,28 @@ if st.button("Dodaj wynik do raportu"):
         else:
             y_for_calc = unk_area
 
-        if not (curve_is_active and unk_is_area == 0):
+        if not (curve_is_active and unk_is_area <= 0):
             res = (y_for_calc - st.session_state['intercept']) / st.session_state['slope']
             
+            # Zapisujemy z jasnymi jednostkami
             if curve_is_active:
                 st.session_state['unknowns_results'].append({
                     "Area (Próbka)": unk_area, 
                     "Area (IS)": unk_is_area,
-                    "Ratio": y_for_calc,
-                    "Wynik stężenia": res
+                    "Ratio": round(y_for_calc, 4),
+                    f"Wynik stężenia ({target_unit})": round(res, 4)
                 })
             else:
                 st.session_state['unknowns_results'].append({
                     "Area": unk_area, 
-                    "Wynik stężenia": res
+                    f"Wynik stężenia ({target_unit})": round(res, 4)
                 })
-    else:
-        st.error("Najpierw oblicz krzywą!")
 
-if st.session_state['unknowns_results']:
-    st.write("Ostatnie wyniki:")
-    st.table(pd.DataFrame(st.session_state['unknowns_results']))
+    if st.session_state['unknowns_results']:
+        st.write("Ostatnie wyniki próbek nieznanych:")
+        st.table(pd.DataFrame(st.session_state['unknowns_results']))
+else:
+    st.warning("Najpierw oblicz krzywą powyżej, aby móc analizować próbki nieznane.")
 
 # --- 5. GENEROWANIE PEŁNEGO RAPORTU ---
 st.header("5. Eksport Danych")
@@ -186,30 +200,32 @@ def generate_full_report():
         s_areas = st.session_state.get('std_areas_data', [])
         i_areas = st.session_state.get('is_areas_data', [])
         ratios = st.session_state.get('ratios_data', [])
-        for c, s, i, r in zip(c2_list, s_areas, i_areas, ratios):
+        for c, s, i, r in zip(st.session_state['c2_list_data'], s_areas, i_areas, ratios):
             output.write(f"{format_n(c)};{format_n(s)};{format_n(i)};{format_n(r)}\n")
     else:
         output.write(f"Stezenie ({target_unit});Peak Area\n")
         y_values = st.session_state.get('y_vals_data', [])
-        for c, a in zip(c2_list, y_values):
+        for c, a in zip(st.session_state['c2_list_data'], y_values):
             output.write(f"{format_n(c)};{format_n(a)}\n")
     output.write("\n")
 
     output.write("--- WYNIKI PROBEK ---\n")
     if st.session_state.get('curve_has_is', False):
-        output.write("Area (Probka);Area (IS);Ratio;Wynik stezenia;Uwagi\n")
+        output.write(f"Area (Probka);Area (IS);Ratio;Wynik stezenia ({target_unit});Uwagi\n")
         for item in st.session_state['unknowns_results']:
-            uwaga = "Ponizej LOQ" if item['Wynik stężenia'] < 0 else ""
-            output.write(f"{format_n(item['Area (Próbka)'])};{format_n(item['Area (IS)'])};{format_n(item['Ratio'])};{format_n(item['Wynik stężenia'])};{uwaga}\n")
+            res_val = item[f'Wynik stężenia ({target_unit})']
+            uwaga = "Ponizej LOQ" if res_val < 0 else "OK"
+            output.write(f"{format_n(item['Area (Próbka)'])};{format_n(item['Area (IS)'])};{format_n(item['Ratio'])};{format_n(res_val)};{uwaga}\n")
     else:
-        output.write("Area probki;Wynik stezenia;Uwagi\n")
+        output.write(f"Area probki;Wynik stezenia ({target_unit});Uwagi\n")
         for item in st.session_state['unknowns_results']:
-            uwaga = "Ponizej LOQ" if item['Wynik stężenia'] < 0 else ""
-            output.write(f"{format_n(item['Area'])};{format_n(item['Wynik stężenia'])};{uwaga}\n")
+            res_val = item[f'Wynik stężenia ({target_unit})']
+            uwaga = "Ponizej LOQ" if res_val < 0 else "OK"
+            output.write(f"{format_n(item['Area'])};{format_n(res_val)};{uwaga}\n")
     
     return output.getvalue()
 
-if st.session_state['unknowns_results'] or 'slope' in st.session_state:
+if st.session_state['unknowns_results'] or st.session_state.get('curve_calculated', False):
     full_report = generate_full_report()
     st.download_button(
         label="📥 Pobierz pełny raport (CSV)",
@@ -220,6 +236,5 @@ if st.session_state['unknowns_results'] or 'slope' in st.session_state:
 
 if st.button("Wyczyść dane"):
     st.session_state['unknowns_results'] = []
-    if 'slope' in st.session_state:
-        del st.session_state['slope']
+    st.session_state['curve_calculated'] = False
     st.rerun()
