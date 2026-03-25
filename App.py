@@ -13,7 +13,7 @@ if 'unknowns_results' not in st.session_state:
     st.session_state['unknowns_results'] = []
 
 # --- 1. Parametry ---
-st.header("1. Parametry Run-u")
+st.header("1. Parametry")
 col1, col2 = st.columns(2)
 with col1:
     stock_unit = st.text_input("Jednostka koncentracji stock roztworów (np. mg/L)", value="mg/L")
