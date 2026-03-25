@@ -16,11 +16,11 @@ if 'unknowns_results' not in st.session_state:
 st.header("1. Parametry")
 col1, col2 = st.columns(2)
 with col1:
-    stock_unit = st.text_input("Jednostka koncentracji stock roztworów (np. mg/L)", value="mg/L")
+    stock_unit = st.text_input("Jednostka koncentracji stock roztworu (np. mg/L)", value="mg/L")
     target_unit = st.text_input("Jednostka koncentracji standardów (np. ug/mL)", value="ug/mL")
     vol_unit = st.text_input("Jednostka objętości standardów (np. mL)", value="mL")
 with col2:
-    C1_raw = st.number_input(f"Stężenie Stock ({stock_unit})", value=100.0)
+    C1_raw = st.number_input(f"Stężenie stock rozwtworu ({stock_unit})", value=100.0)
     V2 = st.number_input(f"Objętość końcowa standardu ({vol_unit})", value=10.0)
     c2_input = st.text_input("Stężenia standardów (oddzielone przecinkiem)", value="0.1, 0.5, 1.0, 2.0, 5.0")
 
@@ -116,7 +116,7 @@ def generate_full_report():
 if st.session_state['unknowns_results'] or 'slope' in st.session_state:
     full_report = generate_full_report()
     st.download_button(
-        label="📥 Pobierz PEŁNY RAPORT (CSV)",
+        label="📥 Pobierz pełny raport (CSV)",
         data=full_report,
         file_name=f"Raport_Laboratorium_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
         mime='text/csv',
